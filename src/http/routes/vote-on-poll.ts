@@ -1,21 +1,22 @@
-import { FastifyInstance } from 'fastify'
-import { prisma } from '../../lib/prisma'
 import { z } from 'zod'
 import { randomUUID } from 'crypto'
+import { prisma } from '../../lib/prisma'
+import { FastifyInstance } from 'fastify'
 import { redis } from '../../lib/redis'
+import { voting } from '../../utils/voting-pub-sub'
 
 export async function voteOnPoll(app: FastifyInstance) {
   app.post('/polls/:pollId/votes', async (req, reply) => {
-    const voteOPollBody = z.object({
+    const voteOnPollBody = z.object({
       pollOptionId: z.string().uuid(),
     })
 
-    const votePollParams = z.object({
+    const voteOnPollParams = z.object({
       pollId: z.string().uuid(),
     })
 
-    const { pollId } = votePollParams.parse(req.params)
-    const { pollOptionId } = voteOPollBody.parse(req.body)
+    const { pollId } = voteOnPollParams.parse(req.params)
+    const { pollOptionId } = voteOnPollBody.parse(req.body)
 
     let { sessionId } = req.cookies
 
@@ -39,7 +40,16 @@ export async function voteOnPoll(app: FastifyInstance) {
           },
         })
 
-        await redis.zincrby(pollId, -1, userPreviousVoteOnPoll.pollOptionId)
+        const votes = await redis.zincrby(
+          pollId,
+          -1,
+          userPreviousVoteOnPoll.pollOptionId
+        )
+
+        voting.publish(pollId, {
+          pollOptionId: userPreviousVoteOnPoll.pollOptionId,
+          votes: Number(votes),
+        })
       } else if (userPreviousVoteOnPoll) {
         return reply.status(400).send({ message: 'You are voted on this poll' })
       }
@@ -64,8 +74,13 @@ export async function voteOnPoll(app: FastifyInstance) {
       },
     })
 
-    await redis.zincrby(pollId, 1, pollOptionId)
+    const votes = await redis.zincrby(pollId, 1, pollOptionId)
 
-    return reply.status(201).send()
+    voting.publish(pollId, {
+      pollOptionId,
+      votes: Number(votes),
+    })
+
+    return reply.status(201).send({ sessionId })
   })
 }
